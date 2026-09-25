@@ -1,4 +1,10 @@
 {
+  "name": "tempmail-bot",
+  "version": "1.0.0",
+  "main": "tempmail_bot.js",
+  "scripts": {
+    "start": "node tempmail_bot.js"
+  },
   "dependencies": {
     "axios": "^1.20.0",
     "node-telegram-bot-api": "^0.66.0"
