@@ -53,6 +53,26 @@ function mailboxKeyboard() {
   };
 }
 
+async function sendInbox(chatId, token) {
+  const messages = await getInbox(token);
+
+  if (!messages.length) {
+    await bot.sendMessage(chatId, '📭 Inbox is empty. New mail will appear here — tap Inbox again to refresh.', mailboxKeyboard());
+    return;
+  }
+
+  const latest = messages.slice(0, 5);
+  let reply = `📥 *Inbox (${messages.length} message${messages.length > 1 ? 's' : ''})*\n\n`;
+
+  for (const m of latest) {
+    const full = await getMessageBody(token, m.id);
+    const body = (full.text || full.html || '(no content)').toString().slice(0, 300);
+    reply += `*From:* ${full.from.address}\n*Subject:* ${full.subject}\n\n${body}\n\n———\n\n`;
+  }
+
+  await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown', ...mailboxKeyboard() });
+}
+
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
     msg.chat.id,
@@ -66,47 +86,26 @@ bot.on('callback_query', async (query) => {
   const data = query.data;
 
   try {
+    await bot.answerCallbackQuery(query.id);
+
     if (data === 'generate') {
       const { address, token } = await generateMailbox();
       userMailboxes.set(chatId, { token });
 
-      await bot.editMessageText(
-        `✅ Your temporary email:\n\n\`${address}\`\n\nUse the buttons below to check your inbox.`,
-        {
-          chat_id: chatId,
-          message_id: query.message.message_id,
-          parse_mode: 'Markdown',
-          ...mailboxKeyboard(),
-        }
+      await bot.sendMessage(
+        chatId,
+        `✅ Your temporary email:\n\n\`${address}\`\n\nChecking inbox...`,
+        { parse_mode: 'Markdown' }
       );
+
+      await sendInbox(chatId, token);
     } else if (data === 'inbox') {
       const mailbox = userMailboxes.get(chatId);
       if (!mailbox) {
-        await bot.answerCallbackQuery(query.id, {
-          text: 'Generate a mail first!',
-          show_alert: true,
-        });
+        await bot.sendMessage(chatId, 'Generate a mail first!', mainMenuKeyboard());
         return;
       }
-
-      const messages = await getInbox(mailbox.token);
-
-      if (!messages.length) {
-        await bot.answerCallbackQuery(query.id, { text: '📭 Inbox is empty.' });
-        return;
-      }
-
-      const latest = messages.slice(0, 5);
-      let reply = `📥 *Inbox (${messages.length} message${messages.length > 1 ? 's' : ''})*\n\n`;
-
-      for (const m of latest) {
-        const full = await getMessageBody(mailbox.token, m.id);
-        const body = (full.text || full.html || '(no content)').toString().slice(0, 300);
-        reply += `*From:* ${full.from.address}\n*Subject:* ${full.subject}\n\n${body}\n\n———\n\n`;
-      }
-
-      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
-      await bot.answerCallbackQuery(query.id);
+      await sendInbox(chatId, mailbox.token);
     }
   } catch (err) {
     console.error(err);
