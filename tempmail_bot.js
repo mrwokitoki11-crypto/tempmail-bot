@@ -46,7 +46,7 @@ function mailKeyboard(address) {
   return {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📋 copy', callback_data: `copy_${address}` }],
+        [{ text: '📋 copy', copy_text: { text: address } }],
         [{ text: '📥 inbox', callback_data: 'inbox' }],
       ],
     },
@@ -115,9 +115,6 @@ bot.on('callback_query', async (query) => {
         return;
       }
       await sendInbox(chatId, mailbox.token, mailbox.address);
-    } else if (data.startsWith('copy_')) {
-      const address = data.replace('copy_', '');
-      await bot.sendMessage(chatId, `\`${address}\``, { parse_mode: 'Markdown' });
     }
   } catch (err) {
     console.error(err);
