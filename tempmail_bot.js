@@ -37,40 +37,49 @@ async function getMessageBody(token, id) {
 function mainMenuKeyboard() {
   return {
     reply_markup: {
-      inline_keyboard: [[{ text: '📧 Generate Mail', callback_data: 'generate' }]],
+      inline_keyboard: [[{ text: '📧 Generate Email', callback_data: 'generate' }]],
     },
   };
 }
 
-function mailboxKeyboard() {
+function mailKeyboard(address) {
   return {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📥 Inbox', callback_data: 'inbox' }],
-        [{ text: '🔄 Generate New Mail', callback_data: 'generate' }],
+        [{ text: '📋 copy', callback_data: `copy_${address}` }],
+        [{ text: '📥 inbox', callback_data: 'inbox' }],
       ],
     },
   };
 }
 
-async function sendInbox(chatId, token) {
+async function sendInbox(chatId, token, address) {
   const messages = await getInbox(token);
 
   if (!messages.length) {
-    await bot.sendMessage(chatId, '📭 Inbox is empty. New mail will appear here — tap Inbox again to refresh.', mailboxKeyboard());
+    await bot.sendMessage(
+      chatId,
+      '📭 Inbox is empty. Tap Inbox again to refresh.',
+      mailKeyboard(address)
+    );
     return;
   }
 
   const latest = messages.slice(0, 5);
-  let reply = `📥 *Inbox (${messages.length} message${messages.length > 1 ? 's' : ''})*\n\n`;
 
   for (const m of latest) {
     const full = await getMessageBody(token, m.id);
-    const body = (full.text || full.html || '(no content)').toString().slice(0, 300);
-    reply += `*From:* ${full.from.address}\n*Subject:* ${full.subject}\n\n${body}\n\n———\n\n`;
+    const body = (full.text || full.html || '(no content)').toString().slice(0, 500);
+
+    const msgText =
+      `👤 *From:* ${full.from.address}\n` +
+      `📝 *Subject:* ${full.subject}\n\n` +
+      `${body}`;
+
+    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
   }
 
-  await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown', ...mailboxKeyboard() });
+  await bot.sendMessage(chatId, '👆 Above are your latest messages.', mailKeyboard(address));
 }
 
 bot.onText(/\/start/, (msg) => {
@@ -90,22 +99,25 @@ bot.on('callback_query', async (query) => {
 
     if (data === 'generate') {
       const { address, token } = await generateMailbox();
-      userMailboxes.set(chatId, { token });
+      userMailboxes.set(chatId, { token, address });
 
       await bot.sendMessage(
         chatId,
-        `✅ Your temporary email:\n\n\`${address}\`\n\nChecking inbox...`,
-        { parse_mode: 'Markdown' }
+        `Use it for signups, verifications, or anywhere you'd rather not use your real email.\n\n` +
+          `Tap the Inbox button below anytime to check for new mails.\n\n` +
+          `email : \`${address}\``,
+        { parse_mode: 'Markdown', ...mailKeyboard(address) }
       );
-
-      await sendInbox(chatId, token);
     } else if (data === 'inbox') {
       const mailbox = userMailboxes.get(chatId);
       if (!mailbox) {
         await bot.sendMessage(chatId, 'Generate a mail first!', mainMenuKeyboard());
         return;
       }
-      await sendInbox(chatId, mailbox.token);
+      await sendInbox(chatId, mailbox.token, mailbox.address);
+    } else if (data.startsWith('copy_')) {
+      const address = data.replace('copy_', '');
+      await bot.sendMessage(chatId, `\`${address}\``, { parse_mode: 'Markdown' });
     }
   } catch (err) {
     console.error(err);
