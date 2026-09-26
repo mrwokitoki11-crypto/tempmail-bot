@@ -72,7 +72,8 @@ async function sendInbox(chatId, token, address) {
 
   const latest = messages.slice(0, 5);
 
-  for (const m of latest) {
+  for (let i = 0; i < latest.length; i++) {
+    const m = latest[i];
     const full = await getMessageBody(token, m.id);
     const body = (full.text || full.html || '(no content)').toString().slice(0, 500);
 
@@ -82,18 +83,24 @@ async function sendInbox(chatId, token, address) {
       `${body}`;
 
     const code = extractCode(body) || extractCode(full.subject || '');
+    const isLast = i === latest.length - 1;
 
     const options = { parse_mode: 'Markdown' };
+    const buttons = [];
+
     if (code) {
-      options.reply_markup = {
-        inline_keyboard: [[{ text: `📋 copy code: ${code}`, copy_text: { text: code } }]],
-      };
+      buttons.push([{ text: `📋 copy code: ${code}`, copy_text: { text: code } }]);
+    }
+    if (isLast) {
+      buttons.push([{ text: '📋 copy', copy_text: { text: address } }]);
+      buttons.push([{ text: '📥 inbox', callback_data: 'inbox' }]);
+    }
+    if (buttons.length) {
+      options.reply_markup = { inline_keyboard: buttons };
     }
 
     await bot.sendMessage(chatId, msgText, options);
   }
-
-  await bot.sendMessage(chatId, '👆 Above are your latest messages.', mailKeyboard(address));
 }
 
 bot.onText(/\/start/, (msg) => {
