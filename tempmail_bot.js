@@ -34,6 +34,11 @@ async function getMessageBody(token, id) {
   return data;
 }
 
+function extractCode(text) {
+  const match = text.match(/\b\d{4,8}\b/);
+  return match ? match[0] : null;
+}
+
 function mainMenuKeyboard() {
   return {
     reply_markup: {
@@ -76,7 +81,16 @@ async function sendInbox(chatId, token, address) {
       `📝 *Subject:* ${full.subject}\n\n` +
       `${body}`;
 
-    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+    const code = extractCode(body) || extractCode(full.subject || '');
+
+    const options = { parse_mode: 'Markdown' };
+    if (code) {
+      options.reply_markup = {
+        inline_keyboard: [[{ text: `📋 copy code: ${code}`, copy_text: { text: code } }]],
+      };
+    }
+
+    await bot.sendMessage(chatId, msgText, options);
   }
 
   await bot.sendMessage(chatId, '👆 Above are your latest messages.', mailKeyboard(address));
