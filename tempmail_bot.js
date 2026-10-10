@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
-// Railway > Variables e BOT_TOKEN set korun
+// Railway > Variables e BOT_TOKEN set kora ache
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN environment variable is missing!');
@@ -13,8 +13,8 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const API_BASE = 'https://api.mail.tm';
 const CHANNEL_USERNAME = '@TH_NumberPanel';
 
-const POLL_INTERVAL_MS = 5000;          // proti 5 second e inbox check
-const POLL_DURATION_MS = 15 * 60 * 1000; // 15 minute porjonto auto check
+const POLL_INTERVAL_MS = 5000;           // proti 5 second e inbox check
+const POLL_DURATION_MS = 30 * 60 * 1000; // 30 minute porjonto auto check
 
 const userMailboxes = new Map(); // chatId -> { token, address, seen:Set, timer, stopAt, busy }
 
@@ -127,22 +127,23 @@ function mainMenuKeyboard() {
   };
 }
 
-function mailKeyboardWithCopy(address) {
+// Button e email tai lekha thakbe, tap korle copy
+function mailKeyboard(address) {
   return {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📋 Copy Email', copy_text: { text: address } }],
-        [{ text: '📥 Inbox', callback_data: 'inbox' }],
+        [{ text: address, copy_text: { text: address } }],
         [{ text: '🔄 New Email', callback_data: 'generate' }],
       ],
     },
   };
 }
 
+// Button e OTP code tai lekha thakbe, tap korle copy
 function otpKeyboard(otp) {
   return {
     reply_markup: {
-      inline_keyboard: [[{ text: '📋 Copy OTP: ' + otp, copy_text: { text: otp } }]],
+      inline_keyboard: [[{ text: otp, copy_text: { text: otp } }]],
     },
   };
 }
@@ -158,8 +159,6 @@ async function sendMail(chatId, token, m) {
     '<b>From:</b> ' + escapeHtml(full.from && full.from.address ? full.from.address : 'unknown') + '\n' +
     '<b>Subject:</b> ' + escapeHtml(full.subject || '(no subject)') + '\n\n' +
     escapeHtml(body.slice(0, 800));
-
-  if (otp) msgText += '\n\n🔑 <b>OTP:</b> <code>' + otp + '</code>';
 
   const opts = { parse_mode: 'HTML', disable_web_page_preview: true };
   if (otp) Object.assign(opts, otpKeyboard(otp));
@@ -191,8 +190,8 @@ function startPolling(chatId) {
       stopPolling(chatId);
       bot.sendMessage(
         chatId,
-        '⏱ Auto-check stopped.\nTap Inbox to check manually or generate a new email.',
-        mailKeyboardWithCopy(mb.address)
+        '⏱ This email has expired.\nTap the button below to get a new one.',
+        mainMenuKeyboard()
       ).catch(() => {});
       return;
     }
@@ -212,29 +211,6 @@ function startPolling(chatId) {
       mb.busy = false;
     }
   }, POLL_INTERVAL_MS);
-}
-
-// ---------------- Manual inbox ----------------
-async function sendInbox(chatId) {
-  const mb = userMailboxes.get(chatId);
-  const messages = await getInbox(mb.token);
-
-  if (!messages.length) {
-    await bot.sendMessage(
-      chatId,
-      '📭 No messages yet.\n\n⚡ Notun mail ashle automatic chole ashbe.',
-      mailKeyboardWithCopy(mb.address)
-    );
-    return;
-  }
-
-  for (const m of messages.slice(0, 5)) {
-    mb.seen.add(m.id);
-    await sendMail(chatId, mb.token, m);
-  }
-
-  // inbox dekhle auto-check abar 15 min er jonno chalu
-  startPolling(chatId);
 }
 
 // ---------------- Commands ----------------
@@ -284,18 +260,13 @@ bot.on('callback_query', async (query) => {
       await bot.sendMessage(
         chatId,
         '✅ Your temporary email is ready!\n\n' +
-          '📧 <code>' + address + '</code>\n\n' +
-          '⚡ Mail/OTP ashle automatic ekhane chole ashbe (15 min). Inbox tap korar dorkar nai.',
-        Object.assign({ parse_mode: 'HTML' }, mailKeyboardWithCopy(address))
+          'Use it for signups, verifications, or anywhere you would rather not use your real email.\n\n' +
+          '⚡ New mails and OTP codes will appear here automatically.\n\n' +
+          '👇 Tap the email to copy it.',
+        mailKeyboard(address)
       );
 
       startPolling(chatId);
-    } else if (data === 'inbox') {
-      if (!userMailboxes.get(chatId)) {
-        await bot.sendMessage(chatId, 'Generate a mail first!', mainMenuKeyboard());
-        return;
-      }
-      await sendInbox(chatId);
     }
   } catch (err) {
     console.error(err);
