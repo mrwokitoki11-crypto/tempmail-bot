@@ -94,21 +94,69 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// HTML entity decode (&zwnj; &shy; &#8204; &#x200c; &amp;zwnj; — sob)
+const NAMED_ENTITIES = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  zwnj: '', zwj: '', shy: '', lrm: '', rlm: '', ensp: ' ', emsp: ' ', thinsp: ' ',
+  hellip: '…', mdash: '—', ndash: '–', copy: '©', reg: '®', trade: '™',
+  rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', sbquo: '‚', bdquo: '„',
+  bull: '•', middot: '·', euro: '€', pound: '£', yen: '¥', cent: '¢',
+  laquo: '«', raquo: '»', deg: '°', times: '×', divide: '÷', para: '¶', sect: '§',
+};
+
+function decodeEntities(str) {
+  let s = String(str);
+  // 3 bar porjonto loop — double encoded (&amp;zwnj;) o thik hobe
+  for (let i = 0; i < 3; i++) {
+    const before = s;
+    s = s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);?/gi, (m, ent) => {
+      if (ent[0] === '#') {
+        const code = ent[1] === 'x' || ent[1] === 'X' ? parseInt(ent.slice(2), 16) : parseInt(ent.slice(1), 10);
+        if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return '';
+        try {
+          return String.fromCodePoint(code);
+        } catch (e) {
+          return '';
+        }
+      }
+      const v = NAMED_ENTITIES[ent.toLowerCase()];
+      return v !== undefined ? v : m;
+    });
+    if (s === before) break;
+  }
+  return s;
+}
+
+// Invisible / zero-width character remove
+function cleanInvisible(str) {
+  return String(str)
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
+    .replace(/[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\u3164\uFEFF\uFFA0]/g, '');
+}
+
+// Ek line er text (subject / from) clean
+function cleanLine(str) {
+  return cleanInvisible(decodeEntities(str || '')).replace(/\s+/g, ' ').trim();
+}
+
 function htmlToText(html) {
-  return String(html)
+  let s = String(html)
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|tr|h\d)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
+    .replace(/<\/(p|div|tr|li|h\d|table|section)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ');
+
+  s = decodeEntities(s);
+  s = cleanInvisible(s);
+
+  return s
+    .split('\n')
+    .map((l) => l.replace(/[ \t\r\f\v]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -288,8 +336,8 @@ function pickBody(obj) {
 
 function fromText(f) {
   if (!f) return 'unknown';
-  if (typeof f === 'string') return f;
-  return f.address || f.email || f.name || 'unknown';
+  if (typeof f === 'string') return cleanLine(f) || 'unknown';
+  return cleanLine(f.address || f.email || f.name || '') || 'unknown';
 }
 
 // Emailnator er "Locked sender / Upgrade to Premium" fake mail skip
@@ -332,7 +380,7 @@ async function gmailInbox(address) {
     .map((m) => ({
       id: String(m.id || m.messageID || m.messageId || m._id || m.uid || ''),
       from: fromText(m.from || m.sender || m.fromAddress),
-      subject: m.subject || '(no subject)',
+      subject: cleanLine(m.subject) || '(no subject)',
       raw: m,
     }))
     .filter((m) => m.id && m.id !== 'ADSVPN' && !isLockedMail(m));
@@ -423,11 +471,14 @@ const userMailboxes = new Map(); // chatId -> mb
 
 async function sendMail(chatId, mail) {
   const otp = extractOtp(mail.subject, mail.body);
+  let body = String(mail.body || '').trim() || '(no content)';
+  if (body.length > 800) body = body.slice(0, 800).trim() + '…';
+
   const msgText =
     '📩 <b>New Mail</b>\n\n' +
     '<b>From:</b> ' + escapeHtml(mail.from) + '\n' +
     '<b>Subject:</b> ' + escapeHtml(mail.subject) + '\n\n' +
-    escapeHtml(String(mail.body).slice(0, 800));
+    escapeHtml(body);
 
   const opts = { parse_mode: 'HTML', disable_web_page_preview: true };
   if (otp) Object.assign(opts, otpKeyboard(otp));
