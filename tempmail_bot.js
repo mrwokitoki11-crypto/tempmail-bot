@@ -29,7 +29,7 @@ const UA =
   'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
 const POLL_INTERVAL_MS = 8000;
-const POLL_DURATION_MS = 30 * 60 * 1000; // 30 minute porjonto auto check
+const POLL_DURATION_MS = 10 * 60 * 1000; // 10 minute por email expire
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ================= DATABASE (data.json) =================
@@ -139,17 +139,30 @@ function cleanLine(str) {
   return cleanInvisible(decodeEntities(str || '')).replace(/\s+/g, ' ').trim();
 }
 
-function htmlToText(html) {
-  let s = String(html)
+function stripTags(str) {
+  return String(str)
     .replace(/<head[\s\S]*?<\/head>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|tr|li|h\d|table|section)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ');
+    .replace(/<\/(p|div|tr|li|h\d|table|section|td)>/gi, '\n')
+    .replace(/<\/?[a-z!?][^>]*>/gi, ' ')
+    // kete jaoa (adhek) tag / svg er sesh ongsho
+    .replace(/<(svg|style|head|script)\b[\s\S]*$/i, ' ')
+    .replace(/<\/?[a-z!][^>\n]*$/gim, ' ');
+}
 
-  s = decodeEntities(s);
+function htmlToText(html) {
+  // Kichu mail e HTML nijei encoded thake (&lt;html&gt;) — tai strip + decode bar bar
+  let s = String(html);
+  for (let i = 0; i < 3; i++) {
+    const next = decodeEntities(stripTags(s));
+    if (next === s) break;
+    s = next;
+  }
+  s = stripTags(s);
   s = cleanInvisible(s);
 
   return s
@@ -162,12 +175,21 @@ function htmlToText(html) {
 
 function extractOtp(subject, body) {
   const text = (subject || '') + '\n' + (body || '');
-  const keyword = text.match(/(?:code|otp|pin|passcode|verification|verify|confirm)[^0-9]{0,40}(\d{4,8})/i);
-  if (keyword) return keyword[1];
-  const split = text.match(/\b(\d{3})[\s-](\d{3})\b/);
-  if (split) return split[1] + split[2];
-  const any = text.match(/\b(\d{4,8})\b/);
-  if (any) return any[1];
+  const kw = '(?:code|otp|pin|passcode|password|verification|verify|confirm|код|コード|验证码)';
+  // "code: 123456" / "code is 123456"
+  const after = text.match(new RegExp(kw + '[^0-9]{0,40}?\\b(\\d{4,8})\\b', 'i'));
+  if (after) return after[1];
+  // "123456 is your code"
+  const before = text.match(new RegExp('\\b(\\d{4,8})\\b[^0-9\\n]{0,30}' + kw, 'i'));
+  if (before) return before[1];
+  // "123 456" / "123-456" (code word thakle)
+  if (new RegExp(kw, 'i').test(text)) {
+    const split = text.match(/\b(\d{3})[\s-](\d{3})\b/);
+    if (split) return split[1] + split[2];
+    // Subject e shudhu ekta number
+    const subj = String(subject || '').match(/\b(\d{4,8})\b/);
+    if (subj) return subj[1];
+  }
   return null;
 }
 
@@ -471,21 +493,36 @@ const userMailboxes = new Map(); // chatId -> mb
 
 async function sendMail(chatId, mail) {
   const otp = extractOtp(mail.subject, mail.body);
-  let body = String(mail.body || '').trim() || '(no content)';
-  if (body.length > 800) body = body.slice(0, 800).trim() + '…';
-
-  const msgText =
-    '📩 <b>New Mail</b>\n\n' +
-    '<b>From:</b> ' + escapeHtml(mail.from) + '\n' +
-    '<b>Subject:</b> ' + escapeHtml(mail.subject) + '\n\n' +
-    escapeHtml(body);
-
   const opts = { parse_mode: 'HTML', disable_web_page_preview: true };
-  if (otp) Object.assign(opts, otpKeyboard(otp));
-  await bot.sendMessage(chatId, msgText, opts);
+  let msgText;
 
+  if (otp) {
+    // OTP paile shudhu choto message + copy button
+    msgText = '🔐 Your OTP <code>' + otp + '</code>';
+    Object.assign(opts, otpKeyboard(otp));
+  } else {
+    // OTP na thakle choto preview
+    let body = String(mail.body || '').trim() || '(no content)';
+    if (body.length > 300) body = body.slice(0, 300).trim() + '…';
+    msgText =
+      '📩 <b>New Mail</b>\n\n' +
+      '<b>From:</b> ' + escapeHtml(mail.from) + '\n' +
+      '<b>Subject:</b> ' + escapeHtml(mail.subject) + '\n\n' +
+      escapeHtml(body);
+  }
+
+  await bot.sendMessage(chatId, msgText, opts);
   db.stats.mails++;
   saveDb();
+}
+
+// "Your temporary Gmail is ready" message ta delete
+function deleteReady(chatId, mb) {
+  if (mb && mb.readyMsgId) {
+    const id = mb.readyMsgId;
+    mb.readyMsgId = null;
+    bot.deleteMessage(chatId, id).catch(() => {});
+  }
 }
 
 function stopPolling(chatId) {
@@ -507,8 +544,14 @@ function startPolling(chatId) {
 
     if (Date.now() > mb.stopAt) {
       stopPolling(chatId);
+      deleteReady(chatId, mb);
+      userMailboxes.delete(chatId);
       bot
-        .sendMessage(chatId, '⏱ This email has expired.\nTap the button below to get a new one.', mainMenuKeyboard())
+        .sendMessage(
+          chatId,
+          '⏱ Your email <code>' + escapeHtml(mb.address) + '</code> has expired and been deleted.\n\nTap the button below to get a new one.',
+          Object.assign({ parse_mode: 'HTML' }, mainMenuKeyboard())
+        )
         .catch(() => {});
       return;
     }
@@ -517,6 +560,7 @@ function startPolling(chatId) {
     mb.busy = true;
     try {
       const mails = await fetchNewMails(mb);
+      if (mails.length) deleteReady(chatId, mb); // mail/OTP ashle email message delete
       for (const mail of mails) await sendMail(chatId, mail);
     } catch (err) {
       if (tgCode(err) === 403) {
@@ -873,6 +917,7 @@ bot.on('message', async (msg) => {
 // ================= CALLBACKS =================
 async function handleGenerate(chatId, userId) {
   stopPolling(chatId);
+  deleteReady(chatId, userMailboxes.get(chatId)); // purono email message delete
   const wait = await bot.sendMessage(chatId, '⏳ Generating your email...').catch(() => null);
 
   let mb;
@@ -891,14 +936,16 @@ async function handleGenerate(chatId, userId) {
   if (db.users[String(userId)]) db.users[String(userId)].emails++;
   saveDb();
 
-  await bot.sendMessage(
+  const ready = await bot.sendMessage(
     chatId,
     '✅ Your temporary Gmail is ready!\n\n' +
       'Use it for signups, verifications, or anywhere you would rather not use your real email.\n\n' +
-      '⚡ New mails and OTP codes will appear here automatically.\n\n' +
+      '⚡ New mails and OTP codes will appear here automatically.\n' +
+      '⏳ This email is valid for 10 minutes.\n\n' +
       '👇 Tap the email to copy it.',
     mailKeyboard(mb.address)
   );
+  mb.readyMsgId = ready.message_id;
   startPolling(chatId);
 }
 
